@@ -65,16 +65,6 @@
 
 <a href="https://jb.gg/OpenSourceSupport"><img src="./images/jb_beam.svg" /></a>
 
-## 打赏
-
-觉得不错的话可以请作者喝杯阔落
-
-> 感谢打赏的朋友 [赞赏列表](Sponsor.md)
-
-| 微信 | 支付宝 |
-| :--: | :--: |
-|![wehcatpay](./images/wechatpay.jpg) | ![alipay](./images/alipay.jpg) |
-
 ## 作者
 
 **STranslate**
