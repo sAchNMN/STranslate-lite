@@ -58,16 +58,6 @@ If you have questions, please go to [Discussions](https://github.com/STranslate/
 
 <a href="https://jb.gg/OpenSourceSupport"><img src="./images/jb_beam.svg" /></a>
 
-## Donations
-
-If you like it, you can buy the author a cup of coffee.
-
-> Thank you to those who rewarded me [Sponsor List](Sponsor.md)
-
-| WeChat | Alipay |
-| :--: | :--: |
-|![wehcatpay](./images/wechatpay.jpg) | ![alipay](./images/alipay.jpg) |
-
 ## Author & Maintainer
 
 **STranslate**
