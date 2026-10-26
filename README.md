@@ -38,12 +38,6 @@
 
 </div>
 
-## Access
-
-| Overseas | Domestic |
-| :--: | :--: |
-| **[Github](https://github.com/STranslate/STranslate)** | **[Gitee](https://gitee.com/zggsong/STranslate)** |
-
 ## Installation
 
 Download the latest [Release](https://github.com/STranslate/STranslate/releases) version and extract it to use.
