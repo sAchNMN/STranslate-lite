@@ -23,6 +23,11 @@ internal sealed class ClipboardSnapshot : IDisposable
     }
 
     /// <summary>
+    /// 抓取快照时剪贴板里的纯文本。取词完成后可用于判断复制是否真的写入了新内容。
+    /// </summary>
+    public string? PlainText => _plainText;
+
+    /// <summary>
     /// 尝试抓取当前剪贴板。抓取失败时调用方必须放弃模拟 Ctrl+C，避免无法恢复。
     /// </summary>
     public static bool TryCapture(out ClipboardSnapshot snapshot)

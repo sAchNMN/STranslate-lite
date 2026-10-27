@@ -31,6 +31,7 @@ internal sealed class PopupForm : Form
     private IntPtr _escapeHook;
     private NativeMethods.HookProc? _escapeHookProc;
     private bool _dismissPosted;
+    private bool _layouting;
 
     public PopupForm()
     {
@@ -227,51 +228,107 @@ internal sealed class PopupForm : Form
 
     private void LayoutPopup()
     {
-        using var graphics = CreateGraphics();
-        var padding = Scale(18);
-        var maxWidth = Scale(460);
-        var minWidth = Scale(240);
-        var maxBodyHeight = Scale(320);
-        var contentWidth = maxWidth - padding * 2;
+        if (_layouting)
+            return;
 
-        var titleSize = graphics.MeasureString(_title, _titleFont, int.MaxValue, _singleLineFormat);
-        var hintSize = string.IsNullOrEmpty(_hint)
-            ? SizeF.Empty
-            : graphics.MeasureString(_hint, _hintFont, int.MaxValue, _singleLineFormat);
-        var bodySize = graphics.MeasureString(_body, _bodyFont, contentWidth, _bodyFormat);
+        _layouting = true;
+        try
+        {
+            // 浮窗句柄可能仍在上一块显示器上，DeviceDpi 也还是旧值。
+            // 先按锚点所在显示器取目标 DPI，再用该 DPI 测量和缩放。
+            var dpi = GetTargetDpi();
 
-        var desiredWidth = Math.Max(
-            Math.Max(titleSize.Width, hintSize.Width),
-            Math.Min(bodySize.Width, contentWidth)) + padding * 2;
-        var width = Math.Clamp((int)Math.Ceiling(desiredWidth), minWidth, maxWidth);
-        var finalContentWidth = width - padding * 2;
-        var finalBodySize = graphics.MeasureString(_body, _bodyFont, finalContentWidth, _bodyFormat);
+            using var measureBitmap = new Bitmap(1, 1);
+            measureBitmap.SetResolution(dpi, dpi);
+            using var graphics = Graphics.FromImage(measureBitmap);
+            graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-        var titleHeight = (int)Math.Ceiling(titleSize.Height);
-        var hintHeight = string.IsNullOrEmpty(_hint) ? 0 : (int)Math.Ceiling(hintSize.Height);
-        var bodyHeight = Math.Min(maxBodyHeight, Math.Max(0, (int)Math.Ceiling(finalBodySize.Height)));
-        var titleGap = Scale(7);
-        var hintGap = hintHeight > 0 ? Scale(10) : 0;
-        var height = padding * 2 + titleHeight + titleGap + bodyHeight + hintGap + hintHeight;
+            var padding = Scale(18, dpi);
+            var maxWidth = Scale(460, dpi);
+            var minWidth = Scale(240, dpi);
+            var maxBodyHeight = Scale(320, dpi);
+            var contentWidth = maxWidth - padding * 2;
 
-        // 留出半个像素，避免边框被 Region 裁掉。
-        height = Math.Max(height, Scale(64));
-        var workingArea = Screen.FromPoint(_anchor).WorkingArea;
-        var offsetX = Scale(16);
-        var offsetY = Scale(20);
+            var titleSize = graphics.MeasureString(_title, _titleFont, int.MaxValue, _singleLineFormat);
+            var hintSize = string.IsNullOrEmpty(_hint)
+                ? SizeF.Empty
+                : graphics.MeasureString(_hint, _hintFont, int.MaxValue, _singleLineFormat);
+            var bodySize = graphics.MeasureString(_body, _bodyFont, contentWidth, _bodyFormat);
 
-        var x = _anchor.X + offsetX;
-        var y = _anchor.Y + offsetY;
-        if (x + width > workingArea.Right - Scale(8))
-            x = _anchor.X - width - offsetX;
-        if (y + height > workingArea.Bottom - Scale(8))
-            y = _anchor.Y - height - offsetY;
+            var desiredWidth = Math.Max(
+                Math.Max(titleSize.Width, hintSize.Width),
+                Math.Min(bodySize.Width, contentWidth)) + padding * 2;
+            var width = Math.Clamp((int)Math.Ceiling(desiredWidth), minWidth, maxWidth);
+            var finalContentWidth = width - padding * 2;
+            var finalBodySize = graphics.MeasureString(_body, _bodyFont, finalContentWidth, _bodyFormat);
 
-        x = Math.Clamp(x, workingArea.Left + Scale(8), Math.Max(workingArea.Left + Scale(8), workingArea.Right - width - Scale(8)));
-        y = Math.Clamp(y, workingArea.Top + Scale(8), Math.Max(workingArea.Top + Scale(8), workingArea.Bottom - height - Scale(8)));
+            var titleHeight = (int)Math.Ceiling(titleSize.Height);
+            var hintHeight = string.IsNullOrEmpty(_hint) ? 0 : (int)Math.Ceiling(hintSize.Height);
+            var bodyHeight = Math.Min(maxBodyHeight, Math.Max(0, (int)Math.Ceiling(finalBodySize.Height)));
+            var titleGap = Scale(7, dpi);
+            var hintGap = hintHeight > 0 ? Scale(10, dpi) : 0;
+            var height = padding * 2 + titleHeight + titleGap + bodyHeight + hintGap + hintHeight;
 
-        Bounds = new Rectangle(x, y, width, height);
-        UpdateRoundedRegion();
+            // 留出半个像素，避免边框被 Region 裁掉。
+            height = Math.Max(height, Scale(64, dpi));
+            var workingArea = Screen.FromPoint(_anchor).WorkingArea;
+            var offsetX = Scale(16, dpi);
+            var offsetY = Scale(20, dpi);
+
+            var x = _anchor.X + offsetX;
+            var y = _anchor.Y + offsetY;
+            if (x + width > workingArea.Right - Scale(8, dpi))
+                x = _anchor.X - width - offsetX;
+            if (y + height > workingArea.Bottom - Scale(8, dpi))
+                y = _anchor.Y - height - offsetY;
+
+            x = Math.Clamp(x, workingArea.Left + Scale(8, dpi), Math.Max(workingArea.Left + Scale(8, dpi), workingArea.Right - width - Scale(8, dpi)));
+            y = Math.Clamp(y, workingArea.Top + Scale(8, dpi), Math.Max(workingArea.Top + Scale(8, dpi), workingArea.Bottom - height - Scale(8, dpi)));
+
+            Bounds = new Rectangle(x, y, width, height);
+            UpdateRoundedRegion();
+        }
+        finally
+        {
+            _layouting = false;
+        }
+    }
+
+    private int GetTargetDpi()
+    {
+        try
+        {
+            var point = new NativeMethods.POINT { X = _anchor.X, Y = _anchor.Y };
+            var monitor = NativeMethods.MonitorFromPoint(point, NativeMethods.MONITOR_DEFAULTTONEAREST);
+            if (monitor != IntPtr.Zero &&
+                NativeMethods.GetDpiForMonitor(
+                    monitor,
+                    NativeMethods.MONITOR_DPI_TYPE.MDT_EFFECTIVE_DPI,
+                    out var dpiX,
+                    out _) == 0 &&
+                dpiX is >= 48 and <= 960)
+            {
+                return (int)dpiX;
+            }
+        }
+        catch
+        {
+            // 远程会话或旧系统不支持 GetDpiForMonitor 时退回当前窗口 DPI。
+        }
+
+        return DeviceDpi > 0 ? DeviceDpi : 96;
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        if (!Visible || _layouting)
+            return;
+
+        // 跨显示器后必须按新 DPI 重新测量；否则会沿用旧显示器的像素尺寸。
+        LayoutPopup();
+        Invalidate();
     }
 
     private void UpdateRoundedRegion()
@@ -423,7 +480,9 @@ internal sealed class PopupForm : Form
             Dismiss();
     }
 
-    private int Scale(int value) => (int)Math.Round(value * DeviceDpi / 96d);
+    private int Scale(int value) => Scale(value, DeviceDpi);
+
+    private int Scale(int value, int dpi) => (int)Math.Round(value * dpi / 96d);
 
     private float ScaleF(float value) => value * DeviceDpi / 96f;
 

@@ -30,7 +30,9 @@ internal static class NativeMethods
     internal const int VK_RMENU = 0xA5;
     internal const int VK_LWIN = 0x5B;
     internal const int VK_RWIN = 0x5C;
+    internal const int VK_SHIFT = 0x10;
     internal const int VK_CONTROL = 0x11;
+    internal const int VK_MENU = 0x12;
     internal const int VK_C = 0x43;
 
     /// <summary>发送 Ctrl+C 前需要检查并抬起的修饰键。</summary>
@@ -38,6 +40,9 @@ internal static class NativeMethods
     [
         VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN
     ];
+
+    /// <summary>等待用户松开热键的最长时间。超过后强制抬起，避免取词一直卡住。</summary>
+    internal const int TriggerKeyReleaseTimeoutMs = 450;
 
     internal const uint INPUT_KEYBOARD = 1;
     internal const uint KEYEVENTF_KEYUP = 0x0002;
@@ -49,6 +54,13 @@ internal static class NativeMethods
     internal const uint MOD_NOREPEAT = 0x4000;
 
     internal const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+    internal enum MONITOR_DPI_TYPE
+    {
+        MDT_EFFECTIVE_DPI = 0,
+        MDT_ANGULAR_DPI = 1,
+        MDT_RAW_DPI = 2
+    }
 
     internal const uint SWP_NOSIZE = 0x0001;
     internal const uint SWP_NOMOVE = 0x0002;
@@ -154,6 +166,16 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
 
+    [DllImport("user32.dll")]
+    internal static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [DllImport("shcore.dll")]
+    internal static extern int GetDpiForMonitor(
+        IntPtr hmonitor,
+        MONITOR_DPI_TYPE dpiType,
+        out uint dpiX,
+        out uint dpiY);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
@@ -189,18 +211,36 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    [DllImport("user32.dll")]
+    internal static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
     /// <summary>
-    /// 发送 Ctrl+C。按下和抬起分开发送，给输入法/编辑器留出处理时间。
+    /// 发送 Ctrl+C。
     /// </summary>
+    /// <param name="triggerVirtualKey">
+    /// 触发热键的虚拟键码；鼠标触发时传 0。发送前会等待该键和所有修饰键真正松开，
+    /// 避免 Alt+X 之类的组合键让目标程序收到 Ctrl+Alt+C，或让浏览器把 Alt 当作菜单键。
+    /// </param>
     /// <remarks>
-    /// 发送前必须先抬起仍然按住的修饰键：热键（如 Alt+X）触发时 Alt 还处于物理按下状态，
-    /// 此时直接注入 C 会被目标程序识别为 Ctrl+Alt+C，复制动作根本不会发生，
-    /// 结果就是“明明选中了文字，却读不到任何内容”。
+    /// 之前的做法是在注入 Ctrl+C 前直接发送修饰键抬起消息。对浏览器来说，一个孤立的
+    /// Alt 抬起消息就可能激活菜单并把键盘焦点从网页移走，随后注入的 Ctrl+C 根本不会
+    /// 被页面处理，表现就是“明明选中了文字却复制不到”。现在改为先等用户松键；
+    /// 只有用户长按不松时才强制抬起。
     /// </remarks>
-    internal static bool SendCtrlC()
+    internal static bool SendCtrlC(int triggerVirtualKey = 0)
     {
-        if (!ReleasePressedModifiers())
-            return false;
+        if (!WaitForKeysReleased(triggerVirtualKey, TriggerKeyReleaseTimeoutMs))
+        {
+            Log.Info("触发热键仍被按住，强制抬起后再发送 Ctrl+C。");
+            if (!ReleasePressedKeys(triggerVirtualKey))
+            {
+                Log.Error("强制抬起按键失败，无法安全发送 Ctrl+C。");
+                return false;
+            }
+        }
+
+        // 给目标程序一点时间处理最后一次按键抬起，再注入复制组合键。
+        Thread.Sleep(20);
 
         var down = new[]
         {
@@ -217,26 +257,84 @@ internal static class NativeMethods
         Thread.Sleep(15);
         var upSent = SendInput((uint)up.Length, up, Marshal.SizeOf<INPUT>());
 
-        return downSent == down.Length && upSent == up.Length;
+        if (downSent == down.Length && upSent == up.Length)
+            return true;
+
+        Log.Error($"发送 Ctrl+C 失败，Win32 错误码：{Marshal.GetLastWin32Error()}。");
+        return false;
     }
 
     /// <summary>
-    /// 抬起当前实际按下的修饰键，避免它们叠加到注入的按键上。
-    /// 已经抬起的键不再重复注入，减少对目标程序的干扰。
+    /// 发送一次 Esc。用于关闭 Alt 组合键可能打开的菜单栏，让键盘焦点回到原窗口。
     /// </summary>
-    private static bool ReleasePressedModifiers()
+    internal static bool SendEscape()
     {
-        var pressed = ModifierKeys.Where(IsKeyDown).ToArray();
-        if (pressed.Length == 0)
-            return true;
-
-        var release = pressed.Select(key => CreateKeyboardInput(key, keyUp: true)).ToArray();
-        if (SendInput((uint)release.Length, release, Marshal.SizeOf<INPUT>()) != release.Length)
+        var down = CreateKeyboardInput(VK_ESCAPE, keyUp: false);
+        var up = CreateKeyboardInput(VK_ESCAPE, keyUp: true);
+        if (SendInput(1, new[] { down }, Marshal.SizeOf<INPUT>()) != 1)
             return false;
 
-        // 等目标程序把修饰键状态处理完，否则紧随其后的 C 仍可能带着 Alt。
         Thread.Sleep(15);
-        return true;
+        return SendInput(1, new[] { up }, Marshal.SizeOf<INPUT>()) == 1;
+    }
+
+    /// <summary>
+    /// 等待触发键与修饰键从物理状态上松开。热键触发时 Alt/Ctrl 仍然按着，
+    /// 立即注入 C 会变成组合键，目标程序不会执行普通复制。
+    /// </summary>
+    private static bool WaitForKeysReleased(int triggerVirtualKey, int timeoutMs)
+    {
+        var keys = BuildTriggerKeys(triggerVirtualKey);
+        var deadline = Environment.TickCount64 + timeoutMs;
+
+        while (Environment.TickCount64 < deadline)
+        {
+            if (!keys.Any(IsKeyDown))
+                return true;
+
+            Thread.Sleep(10);
+        }
+
+        return !keys.Any(IsKeyDown);
+    }
+
+    /// <summary>
+    /// 强制抬起触发键和所有修饰键。仅在用户长按热键、等待超时时使用。
+    /// </summary>
+    private static bool ReleasePressedKeys(int triggerVirtualKey)
+    {
+        var keys = BuildTriggerKeys(triggerVirtualKey);
+        if (keys.Length == 0)
+            return true;
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var pressed = keys.Where(IsKeyDown).ToArray();
+            if (pressed.Length == 0)
+                return true;
+
+            var release = pressed.Select(key => CreateKeyboardInput(key, keyUp: true)).ToArray();
+            if (SendInput((uint)release.Length, release, Marshal.SizeOf<INPUT>()) != release.Length)
+            {
+                Log.Error($"抬起按键失败，Win32 错误码：{Marshal.GetLastWin32Error()}。");
+                return false;
+            }
+
+            Thread.Sleep(15);
+        }
+
+        return !keys.Any(IsKeyDown);
+    }
+
+    private static int[] BuildTriggerKeys(int triggerVirtualKey)
+    {
+        if (triggerVirtualKey <= 0)
+            return ModifierKeys;
+
+        var keys = new int[ModifierKeys.Length + 1];
+        ModifierKeys.CopyTo(keys, 0);
+        keys[^1] = triggerVirtualKey;
+        return keys;
     }
 
     private static bool IsKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
@@ -249,6 +347,9 @@ internal static class NativeMethods
             Keyboard = new KEYBDINPUT
             {
                 VirtualKey = (ushort)virtualKey,
+                // 同时填上扫描码。部分程序只认扫描码；不设置 KEYEVENTF_SCANCODE 时
+                // 系统仍以 VirtualKey 为准，因此不会影响普通程序的兼容性。
+                ScanCode = (ushort)MapVirtualKey((uint)virtualKey, 0),
                 Flags = keyUp ? KEYEVENTF_KEYUP : 0
             }
         }

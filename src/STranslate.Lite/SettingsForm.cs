@@ -52,7 +52,6 @@ internal sealed class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = true;
-        AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(600, 745);
         Padding = new Padding(10);
 
@@ -205,6 +204,52 @@ internal sealed class SettingsForm : Form
         Controls.Add(root);
         LoadServiceIntoEditors(settings.Translator);
         UpdateEngineState();
+
+        // 运行时构造的窗体不会自动带上设计器的 AutoScaleDimensions。
+        // 必须在控件树和 ClientSize 都就绪后再开启 Dpi 缩放，否则 WinForms 会
+        // 先用默认尺寸做一次缩放，随后写入的 ClientSize 又变成未缩放的像素值。
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        PerformAutoScale();
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+
+        // 150%/200% 下按逻辑尺寸放大后可能超出工作区，允许内部表格滚动，
+        // 但外框必须收进当前显示器，避免标题栏或底部按钮跑到屏幕外。
+        ClampToWorkingArea();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        // 基类会在本轮消息处理中按新 DPI 重排控件，延后一帧再限制外框尺寸。
+        if (IsHandleCreated && !IsDisposed)
+            BeginInvoke(new Action(ClampToWorkingArea));
+    }
+
+    private void ClampToWorkingArea()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        var margin = Math.Max(16, DeviceDpi / 6);
+        var maxWidth = Math.Max(320, workingArea.Width - margin * 2);
+        var maxHeight = Math.Max(240, workingArea.Height - margin * 2);
+
+        var width = Math.Min(Width, maxWidth);
+        var height = Math.Min(Height, maxHeight);
+        if (width == Width && height == Height)
+            return;
+
+        Size = new Size(width, height);
+        Location = new Point(
+            workingArea.Left + Math.Max(0, (workingArea.Width - Width) / 2),
+            workingArea.Top + Math.Max(0, (workingArea.Height - Height) / 2));
     }
 
     private Label AddSection(string title)

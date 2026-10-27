@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Text;
@@ -23,12 +24,11 @@ internal static class UiSmokeTest
 
         try
         {
-            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
+            ApplicationConfiguration.Initialize();
 
             var primitives = VerifyEnginePrimitives();
             var migration = VerifySettingsRoundTrip();
+            var uiaTimeout = VerifyUiAutomationTimeout();
             var settings = new SettingsStore().Load();
 
             using var form = new SettingsForm(settings, _ => null);
@@ -51,8 +51,12 @@ internal static class UiSmokeTest
                 $"OK {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
                 $"分片与语言码：{primitives}",
                 $"配置迁移与读写：{migration}",
+                $"UI 自动化超时保护：{uiaTimeout}",
                 $"引擎数量：{EngineRegistry.All.Count}",
                 $"设置窗口：{form.Width}x{form.Height}",
+                $"DPI 诊断：mode={Application.HighDpiMode}, device={form.DeviceDpi}, " +
+                $"auto={form.AutoScaleDimensions.Width}x{form.AutoScaleDimensions.Height}, " +
+                $"current={form.CurrentAutoScaleDimensions.Width}x{form.CurrentAutoScaleDimensions.Height}",
                 $"窗口截图：{imagePath}（免配置引擎）、{configImagePath}（需配置引擎）"
             };
             File.WriteAllLines(reportPath, lines, new UTF8Encoding(false));
@@ -103,6 +107,24 @@ internal static class UiSmokeTest
         Assert(LanguageCodes.Base("en-US") == "en", "en-US 的基码不是 en。");
 
         return $"通过（码点 {chunks.Count} 段、字节 {byteChunks.Count} 段、语言码归一化）";
+    }
+
+    /// <summary>
+    /// 校验 UI Automation 探测的超时保护：目标程序无响应时不能把托盘线程拖住。
+    /// </summary>
+    private static string VerifyUiAutomationTimeout()
+    {
+        var watch = Stopwatch.StartNew();
+        var probe = UiAutomationSelectionReader
+            .TryReadAsync(timeoutMs: 1, CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+        watch.Stop();
+
+        Assert(!probe.HasText || !string.IsNullOrWhiteSpace(probe.Text), "UI 自动化返回了空白文本。");
+        Assert(watch.ElapsedMilliseconds < 1500, "UI 自动化超时保护未生效，取词可能卡住界面。");
+
+        return $"通过（{watch.ElapsedMilliseconds}ms 内返回）";
     }
 
     /// <summary>

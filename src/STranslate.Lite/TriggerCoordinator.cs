@@ -54,10 +54,15 @@ internal sealed class TriggerCoordinator : IDisposable
                 return;
             }
 
-            string? selectedText;
+            // 热键触发时把触发键传给取词器，确保 Alt/Ctrl 等按键已经松开后再注入 Ctrl+C。
+            var isHotkeyTrigger = settings.TriggerMode == TriggerMode.Hotkey;
+            var triggerKey = isHotkeyTrigger ? settings.Hotkey.VirtualKey : 0;
+            var triggerUsesAlt = isHotkeyTrigger && settings.Hotkey.Alt;
+
+            TextCaptureResult capture;
             try
             {
-                selectedText = await _reader.ReadAsync(_shutdown.Token);
+                capture = await _reader.ReadAsync(_shutdown.Token, triggerKey, triggerUsesAlt);
             }
             catch (OperationCanceledException)
             {
@@ -73,19 +78,16 @@ internal sealed class TriggerCoordinator : IDisposable
             if (session != Volatile.Read(ref _session))
                 return;
 
-            if (string.IsNullOrWhiteSpace(selectedText))
+            if (!capture.Success)
             {
-                ShowIfCurrent(
-                    session,
-                    anchor,
-                    "没有获取到选中的文本",
-                    "请先在任意程序中选中文字，再按触发键。");
+                ShowCaptureFailure(session, anchor, capture);
                 return;
             }
 
+            var selectedText = capture.Text!;
             var truncated = selectedText.Length > MaxTextLength;
             var text = truncated ? selectedText[..MaxTextLength] : selectedText;
-            Log.Info($"已获取选中文本，长度 {text.Length}，开始翻译。");
+            Log.Info($"已获取选中文本，长度 {text.Length}，方式 {capture.Method ?? "未知"}，开始翻译。");
 
             _popup.ShowContent(anchor, "STranslate Lite", "正在翻译…", "Esc / 移开鼠标关闭");
 
@@ -125,6 +127,31 @@ internal sealed class TriggerCoordinator : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    private void ShowCaptureFailure(int session, Point anchor, TextCaptureResult result)
+    {
+        var (title, body) = result.Failure switch
+        {
+            TextCaptureFailure.NoSelection => (
+                "没有获取到选中的文本",
+                result.Message ?? "请先在任意程序中选中文字，再按触发键。"),
+            TextCaptureFailure.CopyRejected => (
+                "未能复制选中的文本",
+                result.Message ?? "目标程序没有响应复制按键，请确认文字仍处于选中状态。"),
+            TextCaptureFailure.ClipboardBusy => (
+                "剪贴板正被占用",
+                result.Message ?? "请稍后重试。"),
+            TextCaptureFailure.LowIntegrity => (
+                "取词失败",
+                result.Message ?? "当前程序权限受限，无法模拟复制按键。"),
+            _ => (
+                "取词失败",
+                result.Message ?? "详细信息已写入日志。")
+        };
+
+        Log.Info($"取词未成功：{result.Failure}。");
+        ShowIfCurrent(session, anchor, title, body);
     }
 
     private void ShowIfCurrent(int session, Point anchor, string title, string body)

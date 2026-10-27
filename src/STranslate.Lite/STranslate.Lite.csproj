@@ -4,6 +4,9 @@
         <OutputType>WinExe</OutputType>
         <TargetFramework>net10.0-windows</TargetFramework>
         <UseWindowsForms>true</UseWindowsForms>
+        <!-- WinForms 源码生成器会据此生成 ApplicationConfiguration.Initialize()，
+             在任何窗口创建前启用 Per-Monitor V2，避免系统位图拉伸。 -->
+        <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <PlatformTarget>x64</PlatformTarget>
@@ -19,5 +22,20 @@
         <ServerGarbageCollection>false</ServerGarbageCollection>
         <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     </PropertyGroup>
+
+    <ItemGroup>
+        <!-- 托盘图标需要按当前 DPI 选择多尺寸帧，因此随程序复制一份原始 ICO。 -->
+        <Content Include="Resources\app.ico">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <TargetPath>app.ico</TargetPath>
+        </Content>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- WinForms 项目默认只引用 WindowsForms 配置档，UI Automation 程序集不在其中。
+             显式引用完整 Windows Desktop 框架，才能使用 UIAutomationClient / Types。
+             这两个程序集随 .NET Desktop Runtime 一起分发，不引入 NuGet 依赖。 -->
+        <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+    </ItemGroup>
 
 </Project>

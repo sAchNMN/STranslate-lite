@@ -27,6 +27,10 @@ internal static class Program
             return;
         }
 
+        // 在创建任何窗口之前初始化 WinForms。DPI 模式由 csproj 的
+        // ApplicationHighDpiMode=PerMonitorV2 统一提供，避免运行时与清单各写一份。
+        ApplicationConfiguration.Initialize();
+
         // 同一会话只允许一个实例；再次启动时通知已有实例打开设置窗口。
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)
@@ -39,10 +43,6 @@ internal static class Program
             initialState: false,
             EventResetMode.AutoReset,
             ActivationEventName);
-
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
 
         try
         {

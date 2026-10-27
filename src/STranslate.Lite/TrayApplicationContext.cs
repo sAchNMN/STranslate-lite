@@ -456,7 +456,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             var path = Path.Combine(AppContext.BaseDirectory, "app.ico");
             if (File.Exists(path))
-                return new Icon(path);
+            {
+                // NotifyIcon 的托盘位图尺寸随 DPI 变化（100%=16、125%=20、
+                // 150%=24、200%=32）。直接加载默认 32px 会被外壳缩小而发虚。
+                return new Icon(path, SystemInformation.SmallIconSize);
+            }
         }
         catch (Exception ex)
         {
