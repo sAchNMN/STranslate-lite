@@ -284,7 +284,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// 先应用运行时设置，再持久化；任一步失败都回滚到原设置。
+    /// 先应用运行时设置，再持久化；热键或配置写入失败时回滚到原设置。
+    /// 开机自启是独立的副作用，失败只提示并回退该选项，不影响热键与其它配置。
     /// </summary>
     private string? SaveAndApply(AppSettings candidate)
     {
@@ -298,6 +299,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return applyError;
         }
 
+        // 参考主项目 STranslate：自启失败不阻断设置保存，只把该选项恢复到实际状态。
+        if (!AutoStartService.SetEnabled(candidate.AutoStart, out var autoStartError))
+        {
+            Log.Error($"同步开机自启失败：{autoStartError}");
+            candidate.AutoStart = previous.AutoStart;
+            NotifyError("开机自启设置失败", autoStartError ?? "无法写入“启动”文件夹。");
+        }
+
         try
         {
             _settingsStore.Save(candidate);
@@ -306,6 +315,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             Log.Error("保存配置失败。", ex);
             _ = ApplyRuntime(previous);
+
+            if (IntegrityLevel.IsLow())
+            {
+                return "写入配置文件失败：当前程序以受限权限运行，无法写入用户配置目录。" +
+                       "请在“资源管理器”中直接双击 STranslate.Lite.exe 启动。";
+            }
+
             return "写入配置文件失败，请检查配置目录权限。";
         }
 
@@ -325,13 +341,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _hooks.Configure(settings.TriggerMode, settings.IgnoreFullscreen);
-
-        if (!AutoStartService.SetEnabled(settings.AutoStart, out var autoStartError))
-        {
-            _hotkeyWindow.Unregister();
-            return autoStartError;
-        }
-
         return null;
     }
 

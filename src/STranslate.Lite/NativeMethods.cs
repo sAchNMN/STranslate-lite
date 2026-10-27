@@ -22,10 +22,22 @@ internal static class NativeMethods
 
     internal const int MA_NOACTIVATE = 3;
     internal const int VK_ESCAPE = 0x1B;
+    internal const int VK_LSHIFT = 0xA0;
+    internal const int VK_RSHIFT = 0xA1;
+    internal const int VK_LCONTROL = 0xA2;
+    internal const int VK_RCONTROL = 0xA3;
+    internal const int VK_LMENU = 0xA4;
+    internal const int VK_RMENU = 0xA5;
     internal const int VK_LWIN = 0x5B;
     internal const int VK_RWIN = 0x5C;
-    internal const ushort VK_CONTROL = 0x11;
-    internal const ushort VK_C = 0x43;
+    internal const int VK_CONTROL = 0x11;
+    internal const int VK_C = 0x43;
+
+    /// <summary>发送 Ctrl+C 前需要检查并抬起的修饰键。</summary>
+    private static readonly int[] ModifierKeys =
+    [
+        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN
+    ];
 
     internal const uint INPUT_KEYBOARD = 1;
     internal const uint KEYEVENTF_KEYUP = 0x0002;
@@ -180,8 +192,16 @@ internal static class NativeMethods
     /// <summary>
     /// 发送 Ctrl+C。按下和抬起分开发送，给输入法/编辑器留出处理时间。
     /// </summary>
+    /// <remarks>
+    /// 发送前必须先抬起仍然按住的修饰键：热键（如 Alt+X）触发时 Alt 还处于物理按下状态，
+    /// 此时直接注入 C 会被目标程序识别为 Ctrl+Alt+C，复制动作根本不会发生，
+    /// 结果就是“明明选中了文字，却读不到任何内容”。
+    /// </remarks>
     internal static bool SendCtrlC()
     {
+        if (!ReleasePressedModifiers())
+            return false;
+
         var down = new[]
         {
             CreateKeyboardInput(VK_CONTROL, keyUp: false),
@@ -200,14 +220,35 @@ internal static class NativeMethods
         return downSent == down.Length && upSent == up.Length;
     }
 
-    private static INPUT CreateKeyboardInput(ushort virtualKey, bool keyUp) => new()
+    /// <summary>
+    /// 抬起当前实际按下的修饰键，避免它们叠加到注入的按键上。
+    /// 已经抬起的键不再重复注入，减少对目标程序的干扰。
+    /// </summary>
+    private static bool ReleasePressedModifiers()
+    {
+        var pressed = ModifierKeys.Where(IsKeyDown).ToArray();
+        if (pressed.Length == 0)
+            return true;
+
+        var release = pressed.Select(key => CreateKeyboardInput(key, keyUp: true)).ToArray();
+        if (SendInput((uint)release.Length, release, Marshal.SizeOf<INPUT>()) != release.Length)
+            return false;
+
+        // 等目标程序把修饰键状态处理完，否则紧随其后的 C 仍可能带着 Alt。
+        Thread.Sleep(15);
+        return true;
+    }
+
+    private static bool IsKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    private static INPUT CreateKeyboardInput(int virtualKey, bool keyUp) => new()
     {
         Type = INPUT_KEYBOARD,
         Union = new InputUnion
         {
             Keyboard = new KEYBDINPUT
             {
-                VirtualKey = virtualKey,
+                VirtualKey = (ushort)virtualKey,
                 Flags = keyUp ? KEYEVENTF_KEYUP : 0
             }
         }

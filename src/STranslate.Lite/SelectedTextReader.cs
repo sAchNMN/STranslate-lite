@@ -39,13 +39,29 @@ internal sealed class SelectedTextReader
 
             clipboardChanged = NativeMethods.GetClipboardSequenceNumber() != originalSequence;
             if (!clipboardChanged)
+            {
+                Log.Info("模拟 Ctrl+C 后剪贴板未发生变化，目标程序可能没有执行复制。");
+
+                // 低完整性级别（沙盒、AppContainer）下，系统会丢弃发往普通窗口的模拟按键，
+                // 此时提示“请先选中文字”会误导用户，改为说明真实的权限原因。
+                if (IntegrityLevel.IsLow())
+                {
+                    throw new InvalidOperationException(
+                        "当前程序以受限权限运行，系统拦截了发往目标程序的复制按键。" +
+                        "请在“资源管理器”中直接双击 STranslate.Lite.exe 启动后再试。");
+                }
+
                 return null;
+            }
 
             await Task.Delay(20, cancellationToken).ConfigureAwait(true);
 
             var text = TryReadText();
             if (string.IsNullOrWhiteSpace(text))
+            {
+                Log.Info("剪贴板已更新，但未读到文本内容。");
                 return null;
+            }
 
             return text.Trim();
         }
