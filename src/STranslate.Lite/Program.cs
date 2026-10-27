@@ -9,8 +9,24 @@ internal static class Program
     private const string ActivationEventName = @"Local\STranslate.Lite.Activate";
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        // 命令行诊断模式：不启动托盘、不占用单实例锁。
+        if (args.Length > 0 &&
+            (string.Equals(args[0], "--probe", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(args[0], "-p", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.ExitCode = EngineProbe.Run(args);
+            return;
+        }
+
+        if (args.Length > 0 &&
+            string.Equals(args[0], "--uicheck", StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.ExitCode = UiSmokeTest.Run();
+            return;
+        }
+
         // 同一会话只允许一个实例；再次启动时通知已有实例打开设置窗口。
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)

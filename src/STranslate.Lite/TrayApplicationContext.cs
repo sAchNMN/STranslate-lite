@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
+using STranslate.Lite.Engines;
 
 namespace STranslate.Lite;
 
@@ -19,12 +20,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _appIcon;
     private readonly ToolStripMenuItem _triggerMenu;
+    private readonly ToolStripMenuItem _engineMenu;
     private readonly ToolStripMenuItem _fullscreenItem;
     private readonly ToolStripMenuItem _autoStartItem;
     private readonly EventWaitHandle _activationEvent;
     private readonly CancellationTokenSource _activationStop = new();
     private readonly Thread _activationThread;
     private readonly Dictionary<TriggerMode, ToolStripMenuItem> _triggerItems = [];
+    private readonly Dictionary<TranslatorKind, ToolStripMenuItem> _engineItems = [];
 
     private AppSettings _settings;
     private SettingsForm? _settingsForm;
@@ -50,9 +53,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _appIcon = LoadApplicationIcon();
         var menu = BuildContextMenu(
             out var triggerMenu,
+            out var engineMenu,
             out var fullscreenItem,
             out var autoStartItem);
         _triggerMenu = triggerMenu;
+        _engineMenu = engineMenu;
         _fullscreenItem = fullscreenItem;
         _autoStartItem = autoStartItem;
 
@@ -148,6 +153,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private ContextMenuStrip BuildContextMenu(
         out ToolStripMenuItem triggerMenu,
+        out ToolStripMenuItem engineMenu,
         out ToolStripMenuItem fullscreenItem,
         out ToolStripMenuItem autoStartItem)
     {
@@ -164,6 +170,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         AddTriggerItem(triggerMenu, "键盘组合键", TriggerMode.Hotkey);
         AddTriggerItem(triggerMenu, "禁用", TriggerMode.Disabled);
         menu.Items.Add(triggerMenu);
+
+        engineMenu = new ToolStripMenuItem("翻译引擎");
+        foreach (var engine in EngineRegistry.All)
+            AddEngineItem(engineMenu, engine);
+        menu.Items.Add(engineMenu);
 
         var settingsItem = new ToolStripMenuItem("快捷键与翻译设置…");
         settingsItem.Click += (_, _) => OpenSettings();
@@ -197,6 +208,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         item.Click += (_, _) => ChangeTriggerMode(mode);
         parent.DropDownItems.Add(item);
         _triggerItems[mode] = item;
+    }
+
+    private void AddEngineItem(ToolStripMenuItem parent, TranslateEngine engine)
+    {
+        var item = new ToolStripMenuItem($"{engine.Name} · {engine.Group}");
+        item.Click += (_, _) => ChangeEngine(engine.Kind);
+        parent.DropDownItems.Add(item);
+        _engineItems[engine.Kind] = item;
+    }
+
+    private void ChangeEngine(TranslatorKind kind)
+    {
+        if (_disposed || _settings.Translator == kind)
+            return;
+
+        var candidate = _settings.Clone();
+        candidate.Translator = kind;
+        var error = SaveAndApply(candidate);
+        if (!string.IsNullOrWhiteSpace(error))
+            NotifyError("切换翻译引擎失败", error);
     }
 
     private void OnTranslateRequested() => _coordinator.RequestTrigger();
@@ -366,6 +397,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _triggerMenu.Text = $"触发方式：{GetTriggerDisplayName(_settings.TriggerMode)}";
         foreach (var (mode, item) in _triggerItems)
             item.Checked = _settings.TriggerMode == mode;
+
+        _engineMenu.Text = $"翻译引擎：{EngineRegistry.Get(_settings.Translator).Name}";
+        foreach (var (kind, item) in _engineItems)
+            item.Checked = _settings.Translator == kind;
 
         _fullscreenItem.Checked = _settings.IgnoreFullscreen;
         _autoStartItem.Checked = _settings.AutoStart;

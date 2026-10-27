@@ -11,10 +11,31 @@ internal enum TriggerMode
     Disabled
 }
 
+/// <summary>
+/// 翻译引擎标识。配置文件使用字符串枚举，新增引擎只能追加，不能重命名已有值。
+/// </summary>
 internal enum TranslatorKind
 {
-    Google,
-    OpenAiCompatible
+    Google = 0,
+    OpenAiCompatible = 1,
+    Microsoft = 2,
+    Bilibili = 3,
+    Transmart = 4,
+    Volcengine = 5,
+    Alibaba = 6,
+    Youdao = 7,
+    Iciba = 8,
+    Lara = 9,
+    Lingvanex = 10,
+    MyMemory = 11,
+    Apertium = 12,
+    DeepL = 13,
+    Yandex = 14,
+    Reverso = 15,
+    LibreTranslate = 16,
+    Ollama = 17,
+    DeepLx = 18,
+    MTranServer = 19
 }
 
 /// <summary>
@@ -22,7 +43,7 @@ internal enum TranslatorKind
 /// </summary>
 internal sealed class AppSettings
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
     public TriggerMode TriggerMode { get; set; } = TriggerMode.XButton1;
 
@@ -35,21 +56,39 @@ internal sealed class AppSettings
 
     public TranslatorKind Translator { get; set; } = TranslatorKind.Google;
 
-    public OpenAiCompatibleOptions OpenAi { get; set; } = new();
+    /// <summary>按引擎分别保存的地址 / 密钥 / 模型，切换引擎时互不覆盖。</summary>
+    public Dictionary<string, ServiceOptions> Services { get; set; } = new();
+
+    /// <summary>旧版本（v1）的 OpenAI 配置，读取后迁移进 Services，不再写回。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ServiceOptions? OpenAi { get; set; }
 
     public bool AutoStart { get; set; }
 
-    public AppSettings Clone() => new()
+    public AppSettings Clone()
     {
-        Version = Version,
-        TriggerMode = TriggerMode,
-        Hotkey = Hotkey.Clone(),
-        IgnoreFullscreen = IgnoreFullscreen,
-        TargetLanguage = TargetLanguage,
-        Translator = Translator,
-        OpenAi = OpenAi.Clone(),
-        AutoStart = AutoStart
-    };
+        var clone = new AppSettings
+        {
+            Version = Version,
+            TriggerMode = TriggerMode,
+            Hotkey = Hotkey.Clone(),
+            IgnoreFullscreen = IgnoreFullscreen,
+            TargetLanguage = TargetLanguage,
+            Translator = Translator,
+            AutoStart = AutoStart
+        };
+
+        foreach (var (key, value) in Services)
+            clone.Services[key] = value.Clone();
+
+        return clone;
+    }
+
+    public ServiceOptions GetService(TranslatorKind kind) =>
+        Services.TryGetValue(kind.ToString(), out var service) ? service : new ServiceOptions();
+
+    public void SetService(TranslatorKind kind, ServiceOptions service) =>
+        Services[kind.ToString()] = service;
 
     public void Normalize()
     {
@@ -68,8 +107,48 @@ internal sealed class AppSettings
         if (!Enum.IsDefined(Translator))
             Translator = TranslatorKind.Google;
 
-        OpenAi ??= new OpenAiCompatibleOptions();
-        OpenAi.Normalize();
+        Services ??= new Dictionary<string, ServiceOptions>();
+
+        // v1 配置迁移：OpenAi -> Services[OpenAiCompatible]。
+        if (OpenAi is not null)
+        {
+            if (!Services.ContainsKey(nameof(TranslatorKind.OpenAiCompatible)))
+                Services[nameof(TranslatorKind.OpenAiCompatible)] = OpenAi;
+
+            OpenAi = null;
+        }
+
+        foreach (var service in Services.Values)
+            service.Normalize();
+
+        if (Version < 2)
+            Version = 2;
+    }
+}
+
+/// <summary>
+/// 单个引擎的服务参数。并非每个引擎都会用到所有字段。
+/// </summary>
+internal sealed class ServiceOptions
+{
+    public string Endpoint { get; set; } = string.Empty;
+
+    public string ApiKey { get; set; } = string.Empty;
+
+    public string Model { get; set; } = string.Empty;
+
+    public ServiceOptions Clone() => new()
+    {
+        Endpoint = Endpoint,
+        ApiKey = ApiKey,
+        Model = Model
+    };
+
+    public void Normalize()
+    {
+        Endpoint = Endpoint?.Trim() ?? string.Empty;
+        ApiKey = ApiKey?.Trim() ?? string.Empty;
+        Model = Model?.Trim() ?? string.Empty;
     }
 }
 
@@ -159,30 +238,5 @@ internal sealed class HotkeyDefinition
             Keys.Down => "↓",
             _ => ((Keys)virtualKey).ToString()
         };
-    }
-}
-
-internal sealed class OpenAiCompatibleOptions
-{
-    public string Endpoint { get; set; } = "https://api.openai.com/v1/chat/completions";
-
-    public string ApiKey { get; set; } = string.Empty;
-
-    public string Model { get; set; } = "gpt-4o-mini";
-
-    public OpenAiCompatibleOptions Clone() => new()
-    {
-        Endpoint = Endpoint,
-        ApiKey = ApiKey,
-        Model = Model
-    };
-
-    public void Normalize()
-    {
-        Endpoint = string.IsNullOrWhiteSpace(Endpoint)
-            ? "https://api.openai.com/v1/chat/completions"
-            : Endpoint.Trim();
-        ApiKey = ApiKey?.Trim() ?? string.Empty;
-        Model = string.IsNullOrWhiteSpace(Model) ? "gpt-4o-mini" : Model.Trim();
     }
 }

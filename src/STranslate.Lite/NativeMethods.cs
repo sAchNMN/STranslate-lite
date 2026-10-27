@@ -310,4 +310,9 @@ internal static class NativeMethods
         public ushort ParameterLow;
         public ushort ParameterHigh;
     }
+
+    /// <summary>命令行诊断模式把输出接回调用方控制台。</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AttachConsole(int processId);
 }

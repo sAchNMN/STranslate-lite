@@ -1,13 +1,22 @@
+using System.Drawing;
 using System.Windows.Forms;
+using STranslate.Lite.Engines;
 
 namespace STranslate.Lite;
 
 /// <summary>
 /// 常规设置窗口。只有这个窗口会主动获取焦点，翻译浮窗始终不会。
+/// 布局使用单层 TableLayoutPanel，避免嵌套 AutoSize 造成的行高测量偏差。
 /// </summary>
 internal sealed class SettingsForm : Form
 {
+    private static readonly Color OkColor = Color.FromArgb(0, 128, 64);
+    private static readonly Color FailColor = Color.FromArgb(176, 0, 32);
+
     private readonly Func<AppSettings, string?> _saveHandler;
+    private readonly Dictionary<TranslatorKind, ServiceOptions> _services;
+    private readonly TableLayoutPanel _table;
+
     private readonly ComboBox _triggerCombo;
     private readonly ComboBox _targetCombo;
     private readonly ComboBox _engineCombo;
@@ -17,8 +26,14 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _modelBox;
     private readonly CheckBox _fullscreenCheckBox;
     private readonly CheckBox _autoStartCheckBox;
-    private readonly GroupBox _openAiGroup;
     private readonly Label _hotkeyHint;
+    private readonly Label _serviceHint;
+    private readonly Label _testResultLabel;
+    private readonly Button _testButton;
+    private readonly Label _serviceHeader;
+    private readonly Label _endpointLabel;
+    private readonly Label _apiKeyLabel;
+    private readonly Label _modelLabel;
 
     private HotkeyDefinition _hotkey;
     private bool _capturingHotkey;
@@ -27,6 +42,9 @@ internal sealed class SettingsForm : Form
     {
         _saveHandler = saveHandler;
         _hotkey = settings.Hotkey.Clone();
+        _services = new Dictionary<TranslatorKind, ServiceOptions>();
+        foreach (var engine in EngineRegistry.All)
+            _services[engine.Kind] = settings.GetService(engine.Kind).Clone();
 
         Text = "STranslate Lite 设置";
         StartPosition = FormStartPosition.CenterScreen;
@@ -35,20 +53,18 @@ internal sealed class SettingsForm : Form
         MinimizeBox = false;
         ShowInTaskbar = true;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(570, 700);
-        MinimumSize = new Size(570, 620);
+        ClientSize = new Size(600, 745);
         Padding = new Padding(10);
 
-        var root = new TableLayoutPanel
+        _table = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
-            ColumnCount = 1,
-            RowCount = 5,
+            ColumnCount = 2,
             Padding = new Padding(2)
         };
-        for (var index = 0; index < 5; index++)
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         _triggerCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _triggerCombo.Items.AddRange(
@@ -74,40 +90,65 @@ internal sealed class SettingsForm : Form
         _hotkeyBox.Leave += OnHotkeyLeave;
         UpdateHotkeyText();
 
-        _hotkeyHint = new Label
-        {
-            AutoSize = true,
-            ForeColor = SystemColors.GrayText,
-            Text = "点击输入框后按下组合键；必须包含 Ctrl / Alt / Shift / Win 中至少一个。"
-        };
+        _hotkeyHint = CreateHint(
+            "点击后按组合键，需含 Ctrl / Alt / Shift / Win。");
 
         _engineCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-        _engineCombo.Items.AddRange(
-        [
-            new ChoiceItem<TranslatorKind>("Google 免费接口（无需 API Key）", TranslatorKind.Google),
-            new ChoiceItem<TranslatorKind>("OpenAI 兼容接口（需 API Key）", TranslatorKind.OpenAiCompatible)
-        ]);
+        foreach (var engine in EngineRegistry.All)
+            _engineCombo.Items.Add(new ChoiceItem<TranslatorKind>($"{engine.Name} · {engine.Group}", engine.Kind));
         SelectChoice(_engineCombo, settings.Translator);
-        _engineCombo.SelectedIndexChanged += (_, _) => UpdateEngineState();
+        _engineCombo.SelectedIndexChanged += (_, _) => OnEngineChanged();
 
         _targetCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
         _targetCombo.Items.AddRange(
         [
             new ChoiceItem<string>("自动（中文→英文，其它→中文）", "auto"),
             new ChoiceItem<string>("简体中文", "zh-CN"),
+            new ChoiceItem<string>("繁體中文", "zh-TW"),
             new ChoiceItem<string>("English", "en"),
             new ChoiceItem<string>("日本語", "ja"),
             new ChoiceItem<string>("한국어", "ko"),
-            new ChoiceItem<string>("繁體中文", "zh-TW"),
             new ChoiceItem<string>("Français", "fr"),
-            new ChoiceItem<string>("Deutsch", "de")
+            new ChoiceItem<string>("Deutsch", "de"),
+            new ChoiceItem<string>("Español", "es"),
+            new ChoiceItem<string>("Русский", "ru"),
+            new ChoiceItem<string>("Português", "pt"),
+            new ChoiceItem<string>("Italiano", "it"),
+            new ChoiceItem<string>("العربية", "ar"),
+            new ChoiceItem<string>("Tiếng Việt", "vi"),
+            new ChoiceItem<string>("ไทย", "th"),
+            new ChoiceItem<string>("Bahasa Indonesia", "id"),
+            new ChoiceItem<string>("Türkçe", "tr"),
+            new ChoiceItem<string>("हिन्दी", "hi"),
+            new ChoiceItem<string>("Nederlands", "nl"),
+            new ChoiceItem<string>("Polski", "pl"),
+            new ChoiceItem<string>("Українська", "uk"),
+            new ChoiceItem<string>("فارسی", "fa")
         ]);
         SelectChoice(_targetCombo, settings.TargetLanguage);
 
-        _endpointBox = CreateTextBox(settings.OpenAi.Endpoint);
-        _apiKeyBox = CreateTextBox(settings.OpenAi.ApiKey);
+        _endpointBox = CreateTextBox();
+        _apiKeyBox = CreateTextBox();
         _apiKeyBox.UseSystemPasswordChar = true;
-        _modelBox = CreateTextBox(settings.OpenAi.Model);
+        _modelBox = CreateTextBox();
+        _serviceHint = CreateHint(string.Empty);
+
+        _testButton = new Button
+        {
+            Text = "测试当前引擎",
+            AutoSize = true,
+            MinimumSize = new Size(110, 30)
+        };
+        _testButton.Click += OnTestClicked;
+
+        _testResultLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(340, 0),
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(10, 9, 3, 3),
+            Text = "固定英文测试句，验证网络与配置。"
+        };
 
         _fullscreenCheckBox = new CheckBox
         {
@@ -123,114 +164,106 @@ internal sealed class SettingsForm : Form
             Checked = settings.AutoStart
         };
 
-        root.Controls.Add(CreateTriggerGroup(), 0, 0);
-        root.Controls.Add(CreateEngineGroup(), 0, 1);
-        _openAiGroup = CreateOpenAiGroup();
-        root.Controls.Add(_openAiGroup, 0, 2);
-        root.Controls.Add(CreateBehaviorGroup(), 0, 3);
-        root.Controls.Add(CreateButtonPanel(), 0, 4);
+        AddSection("触发方式");
+        AddFieldRow("触发方式", _triggerCombo);
+        AddFieldRow("键盘快捷键", _hotkeyBox);
+        AddSpan(_hotkeyHint);
+        AddSpan(CreateHint("侧键会拦截原先前/后退行为；全屏应用下自动放行。"));
+
+        AddSection("翻译");
+        AddFieldRow("翻译引擎", _engineCombo);
+        AddFieldRow("目标语言", _targetCombo);
+        AddSpan(CreateHint(
+            "15 个免密钥引擎，另有本地 / 自建服务与大模型接口。"));
+
+        _serviceHeader = AddSection("引擎配置");
+        _endpointLabel = AddFieldRow("服务地址", _endpointBox);
+        _apiKeyLabel = AddFieldRow("API Key", _apiKeyBox);
+        _modelLabel = AddFieldRow("模型", _modelBox);
+        AddSpan(_serviceHint);
+
+        AddSection("引擎测试");
+        AddSpan(CreateTestPanel());
+
+        _fullscreenCheckBox.Margin = new Padding(3, 10, 3, 4);
+        AddCheck(_fullscreenCheckBox);
+        AddCheck(_autoStartCheckBox);
+        AddFillerRow();
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.Controls.Add(_table, 0, 0);
+        root.Controls.Add(CreateFooter(), 0, 1);
 
         Controls.Add(root);
+        LoadServiceIntoEditors(settings.Translator);
         UpdateEngineState();
     }
 
-    private GroupBox CreateTriggerGroup()
+    private Label AddSection(string title)
     {
-        var group = CreateGroup("触发方式");
-        var table = CreateFieldTable();
-
-        AddField(table, 0, "触发方式", _triggerCombo);
-        AddField(table, 1, "键盘快捷键", _hotkeyBox);
-
-        table.Controls.Add(_hotkeyHint, 1, 2);
-        table.SetColumnSpan(_hotkeyHint, 2);
-
-        var note = new Label
+        var label = new Label
         {
+            Text = title,
             AutoSize = true,
-            MaximumSize = new Size(480, 0),
-            ForeColor = SystemColors.GrayText,
-            Text = "侧键触发时会拦截该按键原本的“前进/后退”行为；全屏应用下自动放行。"
+            Font = new Font(Font.FontFamily, Font.Size + 0.5f, FontStyle.Bold),
+            ForeColor = SystemColors.HotTrack,
+            Margin = new Padding(3, 4, 3, 2)
         };
-        table.Controls.Add(note, 0, 3);
-        table.SetColumnSpan(note, 2);
 
-        group.Controls.Add(table);
-        return group;
+        var row = NewRow();
+        _table.Controls.Add(label, 0, row);
+        _table.SetColumnSpan(label, 2);
+        return label;
     }
 
-    private GroupBox CreateEngineGroup()
+    private Label AddFieldRow(string label, Control control)
     {
-        var group = CreateGroup("翻译");
-        var table = CreateFieldTable();
-
-        AddField(table, 0, "翻译引擎", _engineCombo);
-        AddField(table, 1, "目标语言", _targetCombo);
-
-        var note = new Label
+        var row = NewRow();
+        var text = new Label
         {
+            Text = label,
             AutoSize = true,
-            MaximumSize = new Size(480, 0),
-            ForeColor = SystemColors.GrayText,
-            Text = "Google 免费接口无需 Key；如网络不可用，可在下方切换到 OpenAI 兼容的大模型接口。"
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 8, 3, 3)
         };
-        table.Controls.Add(note, 0, 2);
-        table.SetColumnSpan(note, 2);
 
-        group.Controls.Add(table);
-        return group;
+        control.Dock = DockStyle.Fill;
+        control.Margin = new Padding(3, 4, 3, 4);
+        _table.Controls.Add(text, 0, row);
+        _table.Controls.Add(control, 1, row);
+        return text;
     }
 
-    private GroupBox CreateOpenAiGroup()
+    private void AddSpan(Control control)
     {
-        var group = CreateGroup("OpenAI 兼容接口（可选）");
-        var table = CreateFieldTable();
-
-        AddField(table, 0, "API 地址", _endpointBox);
-        AddField(table, 1, "API Key", _apiKeyBox);
-        AddField(table, 2, "模型", _modelBox);
-
-        var note = new Label
-        {
-            AutoSize = true,
-            MaximumSize = new Size(480, 0),
-            ForeColor = SystemColors.GrayText,
-            Text = "例如 DeepSeek：https://api.deepseek.com/v1/chat/completions，模型 deepseek-chat。Key 会以明文保存在本机配置文件中。"
-        };
-        table.Controls.Add(note, 0, 3);
-        table.SetColumnSpan(note, 2);
-
-        group.Controls.Add(table);
-        return group;
+        var row = NewRow();
+        control.Dock = DockStyle.Fill;
+        _table.Controls.Add(control, 0, row);
+        _table.SetColumnSpan(control, 2);
     }
 
-    private GroupBox CreateBehaviorGroup()
+    /// <summary>
+    /// 复选框用 Anchor 而不是 Dock：Dock + AutoSize 会让所在行被撑高，导致下方留出大块空白。
+    /// </summary>
+    private void AddCheck(CheckBox checkBox)
     {
-        var group = CreateGroup("行为");
-        var panel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            Padding = new Padding(6)
-        };
-        panel.Controls.Add(_fullscreenCheckBox);
-        panel.Controls.Add(_autoStartCheckBox);
-        group.Controls.Add(panel);
-        return group;
+        var row = NewRow();
+        checkBox.Anchor = AnchorStyles.Left;
+        checkBox.Margin = new Padding(3, 4, 3, 4);
+        _table.Controls.Add(checkBox, 0, row);
+        _table.SetColumnSpan(checkBox, 2);
     }
 
-    private Control CreateButtonPanel()
+    private Control CreateFooter()
     {
-        var panel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(0, 8, 0, 0)
-        };
-
         var saveButton = new Button
         {
             Text = "保存",
@@ -247,65 +280,86 @@ internal sealed class SettingsForm : Form
             DialogResult = DialogResult.Cancel
         };
 
-        panel.Controls.Add(saveButton);
-        panel.Controls.Add(cancelButton);
         AcceptButton = saveButton;
         CancelButton = cancelButton;
 
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false
+        };
+        buttons.Controls.Add(cancelButton);
+        buttons.Controls.Add(saveButton);
+
         var pathLabel = new Label
         {
-            AutoSize = true,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Height = 20,
+            AutoEllipsis = true,
             ForeColor = SystemColors.GrayText,
-            Text = $"配置文件：{AppPaths.SettingsFile}",
-            Margin = new Padding(6, 12, 8, 0)
+            Text = $"配置文件：{AppPaths.SettingsFile}"
         };
-        panel.Controls.Add(pathLabel);
+
+        var footer = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            ColumnCount = 1,
+            Padding = new Padding(2, 6, 2, 2)
+        };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.Controls.Add(buttons, 0, 0);
+        footer.Controls.Add(pathLabel, 0, 1);
+        return footer;
+    }
+
+    private Control CreateTestPanel()
+    {
+        var panel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            Margin = new Padding(3, 2, 3, 2)
+        };
+        panel.Controls.Add(_testButton);
+        panel.Controls.Add(_testResultLabel);
         return panel;
     }
 
-    private static GroupBox CreateGroup(string title) => new()
+    private int NewRow()
     {
-        Text = title,
-        Dock = DockStyle.Top,
-        AutoSize = true,
-        AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        Padding = new Padding(8),
-        Margin = new Padding(0, 0, 0, 10)
-    };
-
-    private static TableLayoutPanel CreateFieldTable()
-    {
-        var table = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnCount = 2,
-            Padding = new Padding(4)
-        };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        return table;
+        var index = _table.RowStyles.Count;
+        _table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _table.RowCount = index + 1;
+        return index;
     }
 
-    private static void AddField(TableLayoutPanel table, int row, string label, Control control)
+    /// <summary>
+    /// 末尾留一行百分比空白，吸收窗口多余高度。
+    /// 否则 TableLayoutPanel 会把剩余高度加到最后一行，复选框之间出现大段空白。
+    /// </summary>
+    private void AddFillerRow()
     {
-        table.RowCount = Math.Max(table.RowCount, row + 1);
-        var text = new Label
-        {
-            Text = label,
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(3, 7, 3, 3)
-        };
-        control.Dock = DockStyle.Fill;
-        control.Margin = new Padding(3, 4, 3, 4);
-        table.Controls.Add(text, 0, row);
-        table.Controls.Add(control, 1, row);
+        _table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _table.RowCount = _table.RowStyles.Count;
     }
 
-    private static TextBox CreateTextBox(string text) => new()
+    private static Label CreateHint(string text) => new()
     {
         Text = text,
+        AutoSize = true,
+        MaximumSize = new Size(540, 0),
+        ForeColor = SystemColors.GrayText,
+        Margin = new Padding(3, 2, 3, 4)
+    };
+
+    private static TextBox CreateTextBox() => new()
+    {
         Dock = DockStyle.Fill
     };
 
@@ -329,10 +383,61 @@ internal sealed class SettingsForm : Form
         return comboBox.SelectedItem is ChoiceItem<T> choice ? choice.Value : fallback;
     }
 
+    private void OnEngineChanged()
+    {
+        CommitServiceEdits();
+        var kind = GetChoice(_engineCombo, TranslatorKind.Google);
+        LoadServiceIntoEditors(kind);
+        UpdateEngineState();
+    }
+
+    private void CommitServiceEdits()
+    {
+        var kind = GetChoice(_engineCombo, TranslatorKind.Google);
+        var service = _services[kind];
+        service.Endpoint = _endpointBox.Text.Trim();
+        service.ApiKey = _apiKeyBox.Text.Trim();
+        service.Model = _modelBox.Text.Trim();
+    }
+
+    private void LoadServiceIntoEditors(TranslatorKind kind)
+    {
+        var engine = EngineRegistry.Get(kind);
+        var service = _services[kind];
+        _endpointBox.Text = string.IsNullOrWhiteSpace(service.Endpoint)
+            ? engine.DefaultEndpoint ?? string.Empty
+            : service.Endpoint;
+        _apiKeyBox.Text = service.ApiKey;
+        _modelBox.Text = string.IsNullOrWhiteSpace(service.Model)
+            ? engine.DefaultModel ?? string.Empty
+            : service.Model;
+
+        _testResultLabel.ForeColor = SystemColors.GrayText;
+        _testResultLabel.Text = "固定英文测试句，验证网络与配置。";
+    }
+
     private void UpdateEngineState()
     {
-        var isOpenAi = GetChoice(_engineCombo, TranslatorKind.Google) == TranslatorKind.OpenAiCompatible;
-        _openAiGroup.Enabled = isOpenAi;
+        var kind = GetChoice(_engineCombo, TranslatorKind.Google);
+        var engine = EngineRegistry.Get(kind);
+
+        var showEndpoint = engine.SupportsEndpoint;
+        var showApiKey = engine.RequiresApiKey || kind == TranslatorKind.LibreTranslate;
+        var showModel = engine.SupportsModel;
+        var showService = showEndpoint || showApiKey || showModel;
+
+        _endpointBox.Visible = showEndpoint;
+        _endpointLabel.Visible = showEndpoint;
+        _apiKeyBox.Visible = showApiKey;
+        _apiKeyLabel.Visible = showApiKey;
+        _modelBox.Visible = showModel;
+        _modelLabel.Visible = showModel;
+        _serviceHeader.Visible = showService;
+
+        // 地址框里已经显示了默认地址，提示里不再重复，避免窗口内出现冗余的换行。
+        var hint = engine.ConfigHint ?? string.Empty;
+        _serviceHint.Text = hint;
+        _serviceHint.Visible = showService && !string.IsNullOrWhiteSpace(hint);
     }
 
     private void OnHotkeyEnter(object? sender, EventArgs e)
@@ -396,6 +501,55 @@ internal sealed class SettingsForm : Form
         _hotkeyBox.Text = _hotkey.IsValid ? _hotkey.Display : "未设置";
     }
 
+    private async void OnTestClicked(object? sender, EventArgs e)
+    {
+        CommitServiceEdits();
+
+        var kind = GetChoice(_engineCombo, TranslatorKind.Google);
+        var engine = EngineRegistry.Get(kind);
+        if (engine.RequiresApiKey && string.IsNullOrWhiteSpace(_apiKeyBox.Text))
+        {
+            ShowTestResult($"{engine.Name} 需要先填写 API Key。", fail: true);
+            return;
+        }
+
+        var target = GetChoice(_targetCombo, "auto");
+        if (string.Equals(target, "auto", StringComparison.OrdinalIgnoreCase))
+            target = "zh-CN";
+
+        _testButton.Enabled = false;
+        ShowTestResult("正在测试…", fail: false);
+
+        try
+        {
+            var result = await TranslationService.TestAsync(
+                kind,
+                _services[kind],
+                target,
+                "Hello, world! This is a translation test.",
+                CancellationToken.None);
+
+            if (!IsDisposed)
+                ShowTestResult($"测试通过（{result.Text}）", fail: false);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+                ShowTestResult($"测试失败：{ex.Message}", fail: true);
+        }
+        finally
+        {
+            if (!IsDisposed)
+                _testButton.Enabled = true;
+        }
+    }
+
+    private void ShowTestResult(string text, bool fail)
+    {
+        _testResultLabel.ForeColor = fail ? FailColor : OkColor;
+        _testResultLabel.Text = text;
+    }
+
     private void OnSaveClicked(object? sender, EventArgs e)
     {
         var triggerMode = GetChoice(_triggerCombo, TriggerMode.XButton1);
@@ -405,31 +559,33 @@ internal sealed class SettingsForm : Form
             return;
         }
 
-        var engine = GetChoice(_engineCombo, TranslatorKind.Google);
-        var endpoint = _endpointBox.Text.Trim();
-        var apiKey = _apiKeyBox.Text.Trim();
-        var model = _modelBox.Text.Trim();
+        CommitServiceEdits();
 
-        if (engine == TranslatorKind.OpenAiCompatible)
+        var kind = GetChoice(_engineCombo, TranslatorKind.Google);
+        var engine = EngineRegistry.Get(kind);
+        var service = _services[kind];
+
+        if (engine.SupportsEndpoint &&
+            !string.IsNullOrWhiteSpace(service.Endpoint) &&
+            (!Uri.TryCreate(service.Endpoint, UriKind.Absolute, out var uri) ||
+             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
         {
-            if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
-                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-            {
-                AppMessageBox.ShowError("请填写有效的 HTTP/HTTPS API 地址。", "接口配置无效", this);
-                return;
-            }
+            AppMessageBox.ShowError("请填写有效的 HTTP/HTTPS 服务地址。", "引擎配置无效", this);
+            return;
+        }
 
-            if (string.IsNullOrWhiteSpace(apiKey))
-            {
-                AppMessageBox.ShowError("使用 OpenAI 兼容接口时必须填写 API Key。", "接口配置无效", this);
-                return;
-            }
+        if (engine.RequiresApiKey && string.IsNullOrWhiteSpace(service.ApiKey))
+        {
+            AppMessageBox.ShowError($"{engine.Name} 必须填写 API Key。", "引擎配置无效", this);
+            return;
+        }
 
-            if (string.IsNullOrWhiteSpace(model))
-            {
-                AppMessageBox.ShowError("请填写模型名称。", "接口配置无效", this);
-                return;
-            }
+        if (engine.SupportsModel &&
+            string.IsNullOrWhiteSpace(service.Model) &&
+            string.IsNullOrWhiteSpace(engine.DefaultModel))
+        {
+            AppMessageBox.ShowError("请填写模型名称。", "引擎配置无效", this);
+            return;
         }
 
         var candidate = new AppSettings
@@ -438,13 +594,8 @@ internal sealed class SettingsForm : Form
             Hotkey = _hotkey.Clone(),
             IgnoreFullscreen = _fullscreenCheckBox.Checked,
             TargetLanguage = GetChoice(_targetCombo, "auto"),
-            Translator = engine,
-            OpenAi = new OpenAiCompatibleOptions
-            {
-                Endpoint = endpoint,
-                ApiKey = apiKey,
-                Model = model
-            },
+            Translator = kind,
+            Services = _services.ToDictionary(item => item.Key.ToString(), item => item.Value.Clone()),
             AutoStart = _autoStartCheckBox.Checked
         };
 
@@ -461,6 +612,13 @@ internal sealed class SettingsForm : Form
 
     private static bool IsKeyDown(int virtualKey)
         => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    /// <summary>诊断模式使用：切换到指定引擎并刷新配置区，验证联动不出异常。</summary>
+    internal void PreviewEngine(TranslatorKind kind)
+    {
+        SelectChoice(_engineCombo, kind);
+        OnEngineChanged();
+    }
 
     private sealed record ChoiceItem<T>(string Label, T Value)
     {
