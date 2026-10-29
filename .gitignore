@@ -22,3 +22,6 @@ target/
 
 # superpowers docs
 docs/superpowers/
+
+# workbuddy 项目数据
+.workbuddy/

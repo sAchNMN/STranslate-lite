@@ -15,7 +15,7 @@
         <RootNamespace>STranslate.Lite</RootNamespace>
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <ApplicationIcon>Resources\app.ico</ApplicationIcon>
-        <Version>1.0.0</Version>
+        <Version>2.0.11</Version>
         <DebugType>embedded</DebugType>
 
         <!-- 极简常驻程序关闭后台/服务端 GC，减少空闲时的线程与内存占用。 -->
@@ -29,6 +29,11 @@
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
             <TargetPath>app.ico</TargetPath>
         </Content>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- 安装包由 Velopack 生成，运行时需要 SDK 处理安装/更新/卸载钩子参数。 -->
+        <PackageReference Include="Velopack" />
     </ItemGroup>
 
     <ItemGroup>

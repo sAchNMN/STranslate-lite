@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Windows.Forms;
+using Velopack;
 
 namespace STranslate.Lite;
 
@@ -11,6 +12,18 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        /*
+         * ========================================================================
+         * 步骤0：接管安装器生命周期
+         * ========================================================================
+         * 目的：
+         * 1) 由 Velopack 处理安装、更新、卸载时传入的钩子参数，执行完直接退出
+         * 2) 普通启动时立即返回，不产生额外副作用
+         * 注意：
+         * 必须是 Main 的第一条语句，早于单实例锁与任何窗口创建
+         */
+        VelopackApp.Build().Run();
+
         // 命令行诊断模式：不启动托盘、不占用单实例锁。
         if (args.Length > 0 &&
             (string.Equals(args[0], "--probe", StringComparison.OrdinalIgnoreCase) ||
