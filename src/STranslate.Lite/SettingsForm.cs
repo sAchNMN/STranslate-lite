@@ -24,6 +24,7 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _endpointBox;
     private readonly TextBox _apiKeyBox;
     private readonly TextBox _modelBox;
+    private readonly CheckBox _splitIdentifiersCheckBox;
     private readonly CheckBox _fullscreenCheckBox;
     private readonly CheckBox _autoStartCheckBox;
     private readonly Label _hotkeyHint;
@@ -52,7 +53,7 @@ internal sealed class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = true;
-        ClientSize = new Size(600, 745);
+        ClientSize = new Size(600, 775);
         Padding = new Padding(10);
 
         _table = new TableLayoutPanel
@@ -149,6 +150,13 @@ internal sealed class SettingsForm : Form
             Text = "固定英文测试句，验证网络与配置。"
         };
 
+        _splitIdentifiersCheckBox = new CheckBox
+        {
+            AutoSize = true,
+            Text = "拆分代码标识符（current_thread → current thread）",
+            Checked = settings.SplitCodeIdentifiers
+        };
+
         _fullscreenCheckBox = new CheckBox
         {
             AutoSize = true,
@@ -172,6 +180,7 @@ internal sealed class SettingsForm : Form
         AddSection("翻译");
         AddFieldRow("翻译引擎", _engineCombo);
         AddFieldRow("目标语言", _targetCombo);
+        AddCheck(_splitIdentifiersCheckBox);
         AddSpan(CreateHint(
             "15 个免密钥引擎，另有本地 / 自建服务与大模型接口。"));
 
@@ -640,6 +649,7 @@ internal sealed class SettingsForm : Form
             IgnoreFullscreen = _fullscreenCheckBox.Checked,
             TargetLanguage = GetChoice(_targetCombo, "auto"),
             Translator = kind,
+            SplitCodeIdentifiers = _splitIdentifiersCheckBox.Checked,
             Services = _services.ToDictionary(item => item.Key.ToString(), item => item.Value.Clone()),
             AutoStart = _autoStartCheckBox.Checked
         };

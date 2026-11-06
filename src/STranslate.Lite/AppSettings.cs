@@ -56,6 +56,12 @@ internal sealed class AppSettings
 
     public TranslatorKind Translator { get; set; } = TranslatorKind.Google;
 
+    /// <summary>
+    /// 译文原样返回 current_thread 这类标识符时，自动拆成单词重试一次。
+    /// 默认开启：没有它，下划线 / 驼峰标识符在多数引擎里会被当成代码原样返回。
+    /// </summary>
+    public bool SplitCodeIdentifiers { get; set; } = true;
+
     /// <summary>按引擎分别保存的地址 / 密钥 / 模型，切换引擎时互不覆盖。</summary>
     public Dictionary<string, ServiceOptions> Services { get; set; } = new();
 
@@ -75,6 +81,7 @@ internal sealed class AppSettings
             IgnoreFullscreen = IgnoreFullscreen,
             TargetLanguage = TargetLanguage,
             Translator = Translator,
+            SplitCodeIdentifiers = SplitCodeIdentifiers,
             AutoStart = AutoStart
         };
 

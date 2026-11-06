@@ -113,9 +113,20 @@ internal sealed class TriggerCoordinator : IDisposable
             var title = $"{result.TranslatorName} · " +
                         $"{LanguageUtil.GetDisplayName(result.SourceLanguage)} → " +
                         $"{LanguageUtil.GetDisplayName(result.TargetLanguage)}";
-            var hint = truncated
-                ? "原文过长，已截断 · Esc / 移开鼠标关闭"
-                : "Esc / 移开鼠标关闭";
+            var hintParts = new List<string>(3);
+            if (truncated)
+                hintParts.Add("原文过长，已截断");
+
+            // 拆分重试发生过就说明引擎本来会原样返回标识符，这里给出可核对的原词。
+            if (result.Preprocessed is { Length: > 0 } rewritten)
+            {
+                hintParts.Add(rewritten.Length <= 40
+                    ? $"已拆分标识符：{rewritten}"
+                    : "已拆分代码标识符");
+            }
+
+            hintParts.Add("Esc / 移开鼠标关闭");
+            var hint = string.Join(" · ", hintParts);
 
             _popup.ShowContent(anchor, title, result.Text, hint);
         }

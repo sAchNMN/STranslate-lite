@@ -19,6 +19,9 @@
 - 回退取词前深拷贝剪贴板，取词后恢复文本、图片、HTML、RTF、文件列表等可复制格式。
 - 内置 **15 个免密钥翻译引擎**（国内外），另有 4 个本地 / 自建服务和通用大模型接口，共 20 个可选引擎。
 - 目标语言支持自动识别与 21 种指定语言。
+- 选中 `current_thread`、`MAX_BUFFER_SIZE`、`getUserName` 这类代码标识符时，译文若原样回显原文，
+  会自动拆成普通单词重试一次（`current_thread` → 当前线程）；URL、邮箱、文件路径不在改写范围内，
+  可在设置里关闭。
 - 无边框、半透明、圆角浮窗，跟随鼠标位置显示，标题栏显示引擎名与语言方向。
 - 浮窗 `Esc` / 鼠标移开 / 前台窗口变化时自动关闭。
 - 前台应用全屏时自动禁用翻译，并放行鼠标侧键，不影响游戏和全屏视频。
@@ -205,6 +208,7 @@ $env:STRANSLATE_LITE_HOME = "D:\temp\STranslate.Lite"
 | `TargetLanguage` | `auto` 或 `zh-CN`、`zh-TW`、`en`、`ja` 等 |
 | `Translator` | 引擎名，取值为 `Google`、`Microsoft`、`Bilibili`、`Transmart`、`Volcengine`、`Alibaba`、`Youdao`、`Iciba`、`Lara`、`Lingvanex`、`MyMemory`、`Apertium`、`DeepL`、`Yandex`、`Reverso`、`Ollama`、`LibreTranslate`、`DeepLx`、`MTranServer`、`OpenAiCompatible` |
 | `Services` | 按引擎名保存的 `Endpoint` / `ApiKey` / `Model`，只保留填写过的引擎 |
+| `SplitCodeIdentifiers` | 译文原样回显标识符时是否拆成单词重试，默认 `true` |
 | `AutoStart` | 是否写入当前用户 Run 注册表项 |
 
 `Translator` 使用字符串枚举（不区分大小写）。v1 版本的 `OpenAi` 配置在加载时会自动迁移为
@@ -334,6 +338,31 @@ API Key 会以明文保存在本机配置文件中，请注意本机安全。
 - 无论取词成功、失败还是被取消，都在 `finally` 中恢复快照。
 - 快照中的 `Bitmap` / `Stream` 在恢复完成后释放。
 
+### 代码标识符
+
+机器翻译引擎会把下划线 / 驼峰连写的记号当成不可拆分的代码，直接原样返回：
+
+```text
+火山翻译   current_thread       → current_thread      （没有翻译）
+腾讯交互   current_thread       → 当前线程
+```
+
+不同引擎表现并不一致，因此不能简单地“一律先改写”。`CodeTextPreprocessor` + `TranslationService` 的做法是：
+
+1. **先按原文请求**，保留 B站、腾讯交互、有道、Yandex 这些本来就能翻出标识符的引擎的原始结果。
+2. **判定是否真的没翻**：译文与原文完全一致，或目标语言是中文却一个汉字都没有、且原文标识符被原样带回。
+3. **只在没翻时重试**：把 `current_thread` 拆成 `current thread`（单个标识符时发送 `current_thread (current thread)`，
+   给引擎补足上下文），重试结果仍无译文就保留首次结果，不会越改越差。
+4. **剥离回显**：引擎返回 `current_thread（当前线程）` 时只显示“当前线程”，浮窗底部提示已拆分过。
+
+拆分规则刻意保守，避免破坏正常英文：
+
+- 下划线、连续下划线、首尾下划线（`_id`、`__init__`）按单词拆开。
+- 无下划线的驼峰只有在三段以上（`getElementById`）或含全大写缩写（`HTTPClient`）时才拆，`iPhone`、`JavaScript`、`SQLite` 保持原样。
+- 数字不参与拆分（`utf8`、`sha256` 不会被切成两段）。
+- URL、邮箱、Windows / Unix 路径、带常见扩展名的文件名整体跳过。
+- 超过 2000 字符的文本不处理，避免对整篇文章做无意义的重试。
+
 ### 引擎抽象
 
 `Engines/` 下每个引擎只实现“文本 → 供应商协议 → 译文”，公共部分由基类统一处理：
@@ -407,6 +436,8 @@ HttpClient 全局共享，因此引擎数量增加对常驻内存几乎没有影
 - 长文本分片：英文 660 字、中文 270 字分别测试 6 / 3 个引擎，结尾标记完整保留。
 - 中文 → 英文方向：微软、有道、词霸均返回完整英文译文。
 - 设置窗口构造与全部引擎切换的冒烟检查（`--uicheck`）通过，含分片不丢字 / 不切代理对、v1 配置迁移断言。
+- 代码标识符：`current_thread` 在火山、词霸上由“原样返回”变为“当前线程”，B站 / 腾讯交互 / 阿里 / 有道 / Yandex
+  本来就能翻的引擎不受影响；`--uicheck` 覆盖拆分规则、排除规则与开关持久化。
 - UI Automation 探测超时保护通过（目标无响应时不会卡住托盘线程）。
 
 ## 已知限制
@@ -424,6 +455,8 @@ HttpClient 全局共享，因此引擎数量增加对常驻内存几乎没有影
   - Yandex 与 Reverso 在部分网络返回 403，可作为备用引擎。
   - Google 主接口限流时会自动回退到 `clients5.google.com`，两者都失败才报错。
 - MyMemory 匿名额度约每天 5000 字符；有道、词霸只支持中英互译；Apertium 不含中日韩。
+- 标识符拆分只保证“能翻出来”，不保证术语准确：微软仍可能把 `thread` 译成“讨论串”，
+  `threading.current_thread().name` 这类整行代码也仍然只能得到部分翻译。
 - 本地 / 自建引擎需要先自行安装对应服务，未启动时提示“目标计算机积极拒绝”。
 - 富文本/图片格式的剪贴板恢复是“尽力而为”，个别私有格式无法深拷贝时会放弃该格式，但至少有纯文本回退。
 - 浮窗显示期间按 `Esc` 会关闭浮窗，同时 `Esc` 仍会传递给当前应用；这是有意的非拦截设计。
@@ -442,7 +475,8 @@ src/STranslate.Lite/
 ├─ ClipboardSnapshot.cs       # 剪贴板深拷贝/恢复
 ├─ UiAutomationSelectionReader.cs # UI Automation 选区读取（浏览器优先）
 ├─ SelectedTextReader.cs      # 浏览器 UIA 优先 / 其他程序 Ctrl+C 优先 + 兜底
-├─ TranslationService.cs      # 调度引擎、语言解析、错误归一
+├─ TranslationService.cs      # 调度引擎、语言解析、错误归一、标识符重试
+├─ CodeTextPreprocessor.cs    # 代码标识符拆分（下划线 / 驼峰）与回显剥离
 ├─ EngineProbe.cs             # --probe 命令行诊断
 ├─ UiSmokeTest.cs             # --uicheck 自检（分片 / 配置迁移 / 设置窗口）
 ├─ Engines/

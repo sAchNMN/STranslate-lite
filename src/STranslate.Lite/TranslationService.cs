@@ -8,7 +8,8 @@ internal sealed record TranslationResult(
     string Text,
     string SourceLanguage,
     string TargetLanguage,
-    string TranslatorName);
+    string TranslatorName,
+    string? Preprocessed = null);
 
 /// <summary>
 /// 翻译调度：把请求交给 EngineRegistry 中选中的引擎，并统一归一化超时与网络错误。
@@ -32,19 +33,32 @@ internal sealed class TranslationService : IDisposable
         var engine = EngineRegistry.Get(settings.Translator);
         var targetLanguage = LanguageUtil.ResolveTargetLanguage(text, settings.TargetLanguage);
         var context = new EngineContext(_httpClient, settings.GetService(settings.Translator));
+        var plan = settings.SplitCodeIdentifiers ? CodeTextPreprocessor.CreatePlan(text) : CodeTextPlan.None;
 
         try
         {
             var result = await engine.TranslateAsync(text, targetLanguage, context, cancellationToken)
                 .ConfigureAwait(false);
 
+            var retried = await RetryWithSplitIdentifiersAsync(
+                    engine,
+                    plan,
+                    targetLanguage,
+                    context,
+                    result,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            var detected = retried?.DetectedSource ?? result.DetectedSource;
+
             return new TranslationResult(
-                result.Text,
-                string.IsNullOrWhiteSpace(result.DetectedSource)
+                retried?.Text ?? result.Text,
+                string.IsNullOrWhiteSpace(detected)
                     ? "auto"
-                    : LanguageCodes.Normalize(result.DetectedSource),
+                    : LanguageCodes.Normalize(detected),
                 LanguageCodes.Normalize(targetLanguage),
-                engine.Name);
+                engine.Name,
+                retried?.Rewritten);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -59,6 +73,86 @@ internal sealed class TranslationService : IDisposable
             throw new InvalidOperationException($"{engine.Name} 返回了无法解析的数据。", ex);
         }
     }
+
+    /// <summary>
+    /// 首次译文原样回显了标识符（current_thread → current_thread）时，改用拆分后的文本重试一次。
+    /// 只有重试确实拿到了译文才替换首次结果，避免把本来可用的译文换掉。
+    /// </summary>
+    private static async Task<RetryResult?> RetryWithSplitIdentifiersAsync(
+        TranslateEngine engine,
+        CodeTextPlan plan,
+        string targetLanguage,
+        EngineContext context,
+        EngineResult first,
+        CancellationToken cancellationToken)
+    {
+        if (!plan.Applied || !LooksUntranslated(plan, targetLanguage, first.Text))
+            return null;
+
+        EngineResult retry;
+        try
+        {
+            retry = await engine.TranslateAsync(plan.Rewritten, targetLanguage, context, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 重试只是补救手段，失败时保留首次结果，不额外打扰用户。
+            Log.Info($"拆分代码标识符后重试失败，保留首次译文：{ex.Message}");
+            return null;
+        }
+
+        if (LooksUntranslated(plan, targetLanguage, retry.Text))
+            return null;
+
+        Log.Info("译文原样回显代码标识符，已用拆分后的文本重新翻译。");
+
+        return new RetryResult(
+            CodeTextPreprocessor.StripEcho(plan, retry.Text),
+            plan.Rewritten,
+            retry.DetectedSource);
+    }
+
+    /// <summary>
+    /// 判断译文是否根本没有翻译：与原文完全一致，或目标语言是中日韩却一个对应文字都没有、
+    /// 且原文的标识符被原样带回。
+    /// </summary>
+    private static bool LooksUntranslated(CodeTextPlan plan, string targetLanguage, string translated)
+    {
+        var result = translated.Trim();
+        if (result.Length == 0)
+            return false;
+
+        if (string.Equals(Collapse(result), Collapse(plan.Original), StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return IsCjkTarget(targetLanguage) &&
+               !CodeTextPreprocessor.ContainsCjk(result) &&
+               CodeTextPreprocessor.ContainsUntouched(plan, result);
+    }
+
+    private static bool IsCjkTarget(string targetLanguage) =>
+        targetLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ||
+        targetLanguage.StartsWith("ja", StringComparison.OrdinalIgnoreCase) ||
+        targetLanguage.StartsWith("ko", StringComparison.OrdinalIgnoreCase);
+
+    private static string Collapse(string value)
+    {
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            if (!char.IsWhiteSpace(character))
+                builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
+
+    private sealed record RetryResult(string Text, string Rewritten, string? DetectedSource);
 
     /// <summary>
     /// 使用给定引擎与配置翻译一句固定英文，供设置窗口的“测试”按钮和命令行诊断复用。

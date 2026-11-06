@@ -27,6 +27,7 @@ internal static class UiSmokeTest
             ApplicationConfiguration.Initialize();
 
             var primitives = VerifyEnginePrimitives();
+            var preprocessor = VerifyCodeTextPreprocessor();
             var migration = VerifySettingsRoundTrip();
             var uiaTimeout = VerifyUiAutomationTimeout();
             var settings = new SettingsStore().Load();
@@ -50,6 +51,7 @@ internal static class UiSmokeTest
             {
                 $"OK {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
                 $"分片与语言码：{primitives}",
+                $"代码标识符拆分：{preprocessor}",
                 $"配置迁移与读写：{migration}",
                 $"UI 自动化超时保护：{uiaTimeout}",
                 $"引擎数量：{EngineRegistry.All.Count}",
@@ -110,6 +112,35 @@ internal static class UiSmokeTest
     }
 
     /// <summary>
+    /// 校验代码标识符拆分：下划线 / 驼峰 / 常量要拆开，URL、邮箱、路径与普通英文不能被改写。
+    /// </summary>
+    private static string VerifyCodeTextPreprocessor()
+    {
+        var snake = CodeTextPreprocessor.CreatePlan("current_thread");
+        Assert(snake.Applied, "current_thread 没有被识别为代码标识符。");
+        Assert(snake.IsSingleToken, "单个标识符的判定不正确。");
+        Assert(snake.Rewritten == "current_thread (current thread)", "下划线标识符拆分结果不符合预期。");
+
+        var camel = CodeTextPreprocessor.CreatePlan("getUserName");
+        Assert(camel.Rewritten == "getUserName (get user name)", "驼峰标识符拆分结果不符合预期。");
+
+        var constant = CodeTextPreprocessor.CreatePlan("MAX_BUFFER_SIZE");
+        Assert(constant.Rewritten == "MAX_BUFFER_SIZE (max buffer size)", "常量名拆分结果不符合预期。");
+
+        Assert(!CodeTextPreprocessor.CreatePlan("https://example.com/a_b_c").Applied, "URL 被错误改写。");
+        Assert(!CodeTextPreprocessor.CreatePlan("foo_bar@example.com").Applied, "邮箱被错误改写。");
+        Assert(!CodeTextPreprocessor.CreatePlan(@"C:\Users\me\my_file.txt").Applied, "文件路径被错误改写。");
+        Assert(!CodeTextPreprocessor.CreatePlan("iPhone").Applied, "iPhone 被错误拆分。");
+        Assert(!CodeTextPreprocessor.CreatePlan("JavaScript").Applied, "JavaScript 被错误拆分。");
+        Assert(!CodeTextPreprocessor.CreatePlan("Hello, world!").Applied, "普通英文被错误改写。");
+
+        var stripped = CodeTextPreprocessor.StripEcho(snake, "current_thread（当前线程）");
+        Assert(stripped == "当前线程", "译文里回显的原标识符没有被剥离。");
+
+        return "通过（下划线 / 驼峰 / 常量，排除 URL、邮箱、路径与普通英文）";
+    }
+
+    /// <summary>
     /// 校验 UI Automation 探测的超时保护：目标程序无响应时不能把托盘线程拖住。
     /// </summary>
     private static string VerifyUiAutomationTimeout()
@@ -161,6 +192,7 @@ internal static class UiSmokeTest
             Endpoint = "http://127.0.0.1:11434",
             Model = "qwen2.5:7b"
         });
+        loaded.SplitCodeIdentifiers = false;
         store.Save(loaded);
 
         var saved = File.ReadAllText(AppPaths.SettingsFile, Encoding.UTF8);
@@ -170,6 +202,7 @@ internal static class UiSmokeTest
         Assert(reloaded.Version == 2, "保存后配置版本不是 2。");
         Assert(reloaded.GetService(TranslatorKind.Ollama).Model == "qwen2.5:7b", "新增引擎配置未持久化。");
         Assert(reloaded.GetService(TranslatorKind.OpenAiCompatible).ApiKey == "sk-legacy", "迁移后的配置未能读回。");
+        Assert(!reloaded.SplitCodeIdentifiers, "代码标识符拆分开关未持久化。");
 
         return "通过（v1 → v2，含旧字段清理）";
     }
